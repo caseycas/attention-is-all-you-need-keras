@@ -1,17 +1,20 @@
 import random, os, sys
 import numpy as np
-from keras.models import *
-from keras.layers import *
-from keras.callbacks import *
-from keras.initializers import *
+from tensorflow.keras.models import *
+from tensorflow.keras.layers import *
+from tensorflow.keras.callbacks import *
+from tensorflow.keras.initializers import *
 import tensorflow as tf
+import tensorflow.keras.backend as K
 
 try:
 	from dataloader import TokenList, pad_to_longest
 	# for transformer
 except: pass
 
-class LayerNormalization(Layer):
+#Question: What is 'K'? - tf.keras.backend?
+
+class LayerNormalization(Layer): #I think this is just implemented in later TF
 	def __init__(self, eps=1e-6, **kwargs):
 		self.eps = eps
 		super(LayerNormalization, self).__init__(**kwargs)
@@ -28,32 +31,35 @@ class LayerNormalization(Layer):
 	def compute_output_shape(self, input_shape):
 		return input_shape
 
+#Implements Eq 1 from the Attention is all you need paper:
+#Attention(Q, K, V) = softmax(Q*K_T/sqrt(d_k)) * V
 class ScaledDotProductAttention():
 	def __init__(self, d_model, attn_dropout=0.1):
-		self.temper = np.sqrt(d_model)
+		self.temper = np.sqrt(d_model) #1/sqrt(d_k) scalling factor)
 		self.dropout = Dropout(attn_dropout)
 	def __call__(self, q, k, v, mask):
-		attn = Lambda(lambda x:K.batch_dot(x[0],x[1],axes=[2,2])/self.temper)([q, k])
-		if mask is not None:
+		attn = Lambda(lambda x:K.batch_dot(x[0],x[1],axes=[2,2])/self.temper)([q, k]) #Q*K mult (with weird form?_
+		if mask is not None: #Padd attention with near 0 values at the end?
 			mmask = Lambda(lambda x:(-1e+10)*(1-x))(mask)
 			attn = Add()([attn, mmask])
-		attn = Activation('softmax')(attn)
-		attn = self.dropout(attn)
-		output = Lambda(lambda x:K.batch_dot(x[0], x[1]))([attn, v])
+		attn = Activation('softmax')(attn) #softmax wrapper after mult
+		attn = self.dropout(attn) 
+		output = Lambda(lambda x:K.batch_dot(x[0], x[1]))([attn, v]) #Find value mapping from query*key/scaling onto Values
 		return output, attn
 
-class MultiHeadAttention():
+class MultiHeadAttention(): #Looks like a keras model, but doens't implement it...
 	# mode 0 - big martixes, faster; mode 1 - more clear implementation
 	def __init__(self, n_head, d_model, d_k, d_v, dropout, mode=0, use_norm=True):
 		self.mode = mode
 		self.n_head = n_head
-		self.d_k = d_k
-		self.d_v = d_v
-		self.dropout = dropout
+		self.d_k = d_k #dimension of keys
+		self.d_v = d_v #dimension of values
+		self.dropout = dropout #Pass along a dropout rate
 		if mode == 0:
-			self.qs_layer = Dense(n_head*d_k, use_bias=False)
-			self.ks_layer = Dense(n_head*d_k, use_bias=False)
-			self.vs_layer = Dense(n_head*d_v, use_bias=False)
+                        #Store keys and values side by side in the same matrix, why no bias
+			self.qs_layer = Dense(n_head*d_k, use_bias=False) #queries
+			self.ks_layer = Dense(n_head*d_k, use_bias=False) #keys
+			self.vs_layer = Dense(n_head*d_v, use_bias=False) #values
 		elif mode == 1:
 			self.qs_layers = []
 			self.ks_layers = []
@@ -85,9 +91,10 @@ class MultiHeadAttention():
 			ks = Lambda(reshape1)(ks)
 			vs = Lambda(reshape1)(vs)
 
+                        #Pad the masks?  where does K come from?
 			if mask is not None:
 				mask = Lambda(lambda x:K.repeat_elements(x, n_head, 0))(mask)
-			head, attn = self.attention(qs, ks, vs, mask=mask)  
+			head, attn = self.attention(qs, ks, vs, mask=mask)  # get attention after reshaping (why reshape?_
 				
 			def reshape2(x):
 				s = tf.shape(x)   # [n_head * batch_size, len_v, d_v]
@@ -96,13 +103,13 @@ class MultiHeadAttention():
 				x = tf.reshape(x, [-1, s[1], n_head*d_v])  # [batch_size, len_v, n_head * d_v]
 				return x
 			head = Lambda(reshape2)(head)
-		elif self.mode == 1:
+		elif self.mode == 1: #More clear implementation
 			heads = []; attns = []
-			for i in range(n_head):
+			for i in range(n_head): #for each head in the multihead attention get the key, value, query
 				qs = self.qs_layers[i](q)   
 				ks = self.ks_layers[i](k) 
 				vs = self.vs_layers[i](v) 
-				head, attn = self.attention(qs, ks, vs, mask)
+				head, attn = self.attention(qs, ks, vs, mask) #ScaledDotProductAttention
 				heads.append(head); attns.append(attn)
 			head = Concatenate()(heads) if n_head > 1 else heads[0]
 			attn = Concatenate()(attns) if n_head > 1 else attns[0]
@@ -224,7 +231,7 @@ class Transformer:
 		self.d_model = d_model
 		self.decode_model = None
 		d_emb = d_model
-
+                #Defined elsewhere
 		pos_emb = Embedding(len_limit, d_emb, trainable=False, \
 						   weights=[GetPosEncodingMatrix(len_limit, d_emb)])
 
@@ -234,10 +241,12 @@ class Transformer:
 			o_word_emb = i_word_emb
 		else: o_word_emb = Embedding(o_tokens.num(), d_emb)
 
+                #Feeds into second part of decoder self attention
 		self.encoder = Encoder(d_model, d_inner_hid, n_head, d_k, d_v, layers, dropout, \
 							word_emb=i_word_emb, pos_emb=pos_emb)
 		self.decoder = Decoder(d_model, d_inner_hid, n_head, d_k, d_v, layers, dropout, \
 							word_emb=o_word_emb, pos_emb=pos_emb)
+                #Linear layer that takes decoder output
 		self.target_layer = TimeDistributed(Dense(o_tokens.num(), use_bias=False))
 
 	def get_pos_seq(self, x):
@@ -245,6 +254,9 @@ class Transformer:
 		pos = K.cumsum(K.ones_like(x, 'int32'), 1)
 		return pos * mask
 
+        #Compile is an inbuilt keras function that determines the set up during learning time.
+        #I'm not sure why we need to override it here when it hasn't been in other models.
+        #This might be something to ask Vincent about.
 	def compile(self, optimizer='adam', active_layers=999):
 		src_seq_input = Input(shape=(None,), dtype='int32')
 		tgt_seq_input = Input(shape=(None,), dtype='int32')
@@ -389,6 +401,8 @@ class Transformer:
 		final_results = [(delimiter.join(x),y) for x,y in final_results]
 		return final_results
 
+
+#Manage the learning rate changes...
 class LRSchedulerPerStep(Callback):
 	def __init__(self, d_model, warmup=4000):
 		self.basic = d_model**-0.5
