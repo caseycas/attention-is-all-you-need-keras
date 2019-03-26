@@ -21,9 +21,10 @@ s2s.model.fit([Xtrain, Ytrain], None, batch_size=64, epochs=30, validation_data=
 
 from transformer import Transformer, LRSchedulerPerStep, LRSchedulerPerEpoch
 
+#Okay, so the layers are 6 by default, but are limited to 2 for speed?
 d_model = 512
 s2s = Transformer(itokens, otokens, len_limit=70, d_model=d_model, d_inner_hid=512, \
-				   n_head=8, d_k=64, d_v=64, layers=2, dropout=0.1)
+                   n_head=8, d_k=64, d_v=64, layers=2, dropout=0.1)
 
 mfile = 'models/en2de.model.h5'
 
@@ -39,13 +40,13 @@ try: s2s.model.load_weights(mfile)
 except: print('\n\nnew model')
 
 if 'test' in sys.argv:
-	print(s2s.decode_sequence_fast('A black dog eats food .'.split(), delimiter=' '))
-	while True:
-		quest = input('> ')
-		print(s2s.decode_sequence_fast(quest.split(), delimiter=' '))
-		rets = s2s.beam_search(quest.split(), delimiter=' ')
-		for x, y in rets: print(x, y)
+    print(s2s.decode_sequence_fast('A black dog eats food .'.split(), delimiter=' '))
+    while True:
+        quest = input('> ')
+        print(s2s.decode_sequence_fast(quest.split(), delimiter=' '))
+        rets = s2s.beam_search(quest.split(), delimiter=' ')
+        for x, y in rets: print(x, y)
 else: #Transformer doesn't seem to explicitly extend a keras model, but model.fit is the usual training call.
-	s2s.model.fit([Xtrain, Ytrain], None, batch_size=64, epochs=30, \
-				validation_data=([Xvalid, Yvalid], None), \
-				callbacks=[lr_scheduler, model_saver])
+    s2s.model.fit([Xtrain, Ytrain], None, batch_size=64, epochs=30, \
+                validation_data=([Xvalid, Yvalid], None), \
+                callbacks=[lr_scheduler, model_saver])
